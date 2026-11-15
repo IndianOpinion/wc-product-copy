@@ -1,0 +1,54 @@
+{
+    "name": "indianopinion/wc-product-copy",
+    "description": "Writes WooCommerce product descriptions and short descriptions from the store's own product data, as drafts for an editor to accept, in bulk with a dry run.",
+    "type": "wordpress-plugin",
+    "license": "MIT",
+    "keywords": ["wordpress", "woocommerce", "product description", "llm", "drafts"],
+    "homepage": "https://github.com/IndianOpinion/wc-product-copy",
+    "support": {
+        "issues": "https://github.com/IndianOpinion/wc-product-copy/issues",
+        "source": "https://github.com/IndianOpinion/wc-product-copy",
+        "email": "hello@indianopinion.org"
+    },
+    "authors": [
+        {"name": "Indian Opinion", "email": "hello@indianopinion.org"}
+    ],
+    "repositories": [
+        {"type": "vcs", "url": "https://github.com/IndianOpinion/llm-json-php"}
+    ],
+    "require": {
+        "php": ">=8.1",
+        "ext-json": "*",
+        "indianopinion/llm-json-php": "^0.1"
+    },
+    "require-dev": {
+        "phpunit/phpunit": "^10.5",
+        "phpstan/phpstan": "^2.1",
+        "squizlabs/php_codesniffer": "^3.10",
+        "php-stubs/wordpress-stubs": "^6.4",
+        "php-stubs/woocommerce-stubs": "^9.0",
+        "php-stubs/wp-cli-stubs": "^2.10"
+    },
+    "suggest": {
+        "ext-gd": "Lets the WordPress image editor resize the product image (or ext-imagick)."
+    },
+    "autoload": {
+        "psr-4": {"IndianOpinion\\WcProductCopy\\": "src/"},
+        "files": ["src/functions.php"]
+    },
+    "autoload-dev": {
+        "psr-4": {"IndianOpinion\\WcProductCopy\\Tests\\": "tests/"}
+    },
+    "config": {
+        "sort-packages": true,
+        "platform": {"php": "8.1.0"}
+    },
+    "scripts": {
+        "test": "phpunit",
+        "stan": "phpstan analyse --memory-limit=1G",
+        "cs": "phpcs",
+        "check": ["@cs", "@stan", "@test"]
+    },
+    "minimum-stability": "stable",
+    "prefer-stable": true
+}
