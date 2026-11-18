@@ -96,7 +96,7 @@ final class MetaBox
             : '';
 
         if ($draft->state === Draft::PENDING) {
-            foreach ($draft->fields as $field => $text) {
+            foreach (array_intersect_key($draft->fields, array_flip($draft->openFields())) as $field => $text) {
                 $out .= $this->field($form, $product, $draft, $field, $text, $refused === $field || $refused === 'both');
             }
             if ($draft->note !== '') {
@@ -109,7 +109,7 @@ final class MetaBox
                 $out .= '<p><label><input type="checkbox" form="' . esc_attr($form) . '" name="product_copy_accept_stale" value="1"> '
                     . esc_html__('Accept anyway (the draft was written from older product data)', 'wc-product-copy') . '</label></p>';
             }
-            if (count($draft->fields) > 1) {
+            if (count($draft->openFields()) > 1) {
                 $out .= $this->button($form, 'accept:both', __('Accept both', 'wc-product-copy'), 'primary');
             }
             $out .= $this->button($form, 'discard:', __('Discard', 'wc-product-copy'), 'secondary');
@@ -212,22 +212,32 @@ final class MetaBox
      */
     public static function highlight(string $html, array $flags): string
     {
-        $plain = esc_html(wp_strip_all_tags($html));
+        $plain = wp_strip_all_tags($html);
         $words = [];
         foreach ($flags as $flag) {
             if (in_array($flag['code'], ['unverified_number', 'blocked_phrase', 'price_mention'], true)) {
                 foreach ($flag['detail'] as $word) {
                     if ($word !== '') {
-                        $words[] = preg_quote(esc_html($word), '/');
+                        $words[] = preg_quote($word, '/');
                     }
                 }
             }
         }
         if ($words === []) {
-            return $plain;
+            return esc_html($plain);
+        }
+        // Match on the raw text and escape each piece, so a flagged number
+        // can never land inside an entity such as &#039;.
+        $parts = preg_split('/(' . implode('|', array_unique($words)) . ')/iu', $plain, -1, PREG_SPLIT_DELIM_CAPTURE);
+        if (!is_array($parts)) {
+            return esc_html($plain);
+        }
+        $out = '';
+        foreach ($parts as $i => $part) {
+            $out .= $i % 2 === 1 ? '<mark class="product-copy-highlight">' . esc_html($part) . '</mark>' : esc_html($part);
         }
 
-        return (string) preg_replace('/(' . implode('|', array_unique($words)) . ')/iu', '<mark class="product-copy-highlight">$1</mark>', $plain);
+        return $out;
     }
 
     private function button(string $form, string $value, string $label, string $kind): string

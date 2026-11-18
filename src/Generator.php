@@ -80,17 +80,14 @@ final class Generator
             return JobOutcome::waitSwitch('not_configured');
         }
 
-        // Case 31: call cap, counted in attempts.
+        // Cases 31 and 32, early: no image work when a cap is already reached.
+        // They are checked again atomically when the attempt is counted.
         if ($this->usage->callsLeft($settings) <= 0) {
             return $this->capReached('calls');
         }
-        // Case 32: optional cost cap.
         $costCap = $settings->costCap();
-        if ($costCap !== null) {
-            $estimate = $settings->assumedCost() ?? 0.0;
-            if ($this->usage->today()['cost'] + $estimate > $costCap + 1e-9) {
-                return $this->capReached('cost');
-            }
+        if ($costCap !== null && $this->usage->today()['cost'] + ($settings->assumedCost() ?? 0.0) > $costCap + 1e-9) {
+            return $this->capReached('cost');
         }
 
         // Cases 9 to 12: image, prepared once per job and not kept.
@@ -142,7 +139,14 @@ final class Generator
         );
 
         // Count the attempt before the call: a failed call still costs money.
-        $this->usage->addCalls(1);
+        // Cap check and count are one locked step, so two workers cannot
+        // both take the last call of the day.
+        $capped = $this->usage->reserveCall($settings->callCap(), $costCap, $settings->assumedCost() ?? 0.0);
+        if ($capped !== null) {
+            $this->meter->release($decision['reservation']);
+
+            return $this->capReached($capped);
+        }
         try {
             $response = $caller->call($request);
         } catch (GenerationException $e) {
@@ -155,7 +159,8 @@ final class Generator
 
         $this->usage->addCalls(max(0, $response->billedCalls - 1));
         [$cost, $costSource] = $this->recordCost($response->cost, $response->costSource, $settings);
-        $this->meter->record($decision['reservation'], $caller->provider(), $caller->model(), $response->tokensIn, $response->tokensOut, $response->cost, 'ok');
+        $reported = $response->costSource === 'reported' ? $response->cost : null;
+        $this->meter->record($decision['reservation'], $caller->provider(), $caller->model(), $response->tokensIn, $response->tokensOut, $reported, 'ok');
 
         // Case 40, for callers that do not enforce the schema themselves.
         $texts = [];

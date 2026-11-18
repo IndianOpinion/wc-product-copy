@@ -141,7 +141,10 @@ product**.
    active, else through Action Scheduler (part of WooCommerce), one at a
    time. Each job reads the switch and caps afresh, locks the product,
    checks eligibility again, asks spend-meter if it is active, then makes
-   one call.
+   one call. The prompt is the built-in one, or the prompt-library template
+   `product-copy-generate` when prompt-library is active (the built-in
+   prompt is offered to it as that template's default). The product title
+   and facts are sent inside `<title>` and `<facts>` blocks marked as data.
 5. **Checks.** The answer is cleaned (simple HTML only, no links, no
    scripts, no contact details) and flagged: numbers not in the facts,
    blocked phrases, price or stock talk, removed contact details, length,

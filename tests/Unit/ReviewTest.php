@@ -274,4 +274,41 @@ final class ReviewTest extends TestCase
         $this->assertNotSame([], $this->plugin()->drafts->get($fresh)?->fields, 'A 31-day-old draft keeps its text.');
         $this->assertSame(0, $this->plugin()->housekeeping->run(), 'Nothing left to strip today.');
     }
+
+    /** Review fix: a field accepted from a draft is never written again from it, so its undo value survives. */
+    public function testAnAcceptedFieldIsNotAcceptedAgainFromTheSameDraft(): void
+    {
+        $id = $this->drafted();
+        $this->assertTrue(product_copy_accept($id, 'description')->ok);
+        $undo = $this->plugin()->acceptor->undoValues($id);
+        $this->assertSame('', $undo['description']);
+
+        $draft = product_copy_get_draft($id);
+        $this->assertNotNull($draft);
+        $this->assertSame(['short'], $draft->openFields());
+        $this->assertSame(AcceptResult::NO_DRAFT, product_copy_accept($id, 'description')->reason);
+
+        $result = product_copy_accept($id, 'both');
+        $this->assertTrue($result->ok);
+        $this->assertSame(['short'], $result->fields);
+        $this->assertSame('', $this->plugin()->acceptor->undoValues($id)['description'], 'The first undo value is kept.');
+    }
+
+    /** Review fix: replace needs an explicit boolean, not any truthy value. */
+    public function testReplaceNeedsAStrictTrue(): void
+    {
+        $id = $this->drafted();
+        $this->edit($id, 'description', '<p>Written by the owner.</p>');
+        $this->assertSame(AcceptResult::MANUAL_TEXT, product_copy_accept($id, 'description', ['replace' => 1, 'accept_stale' => true])->reason);
+        $this->assertSame('<p>Written by the owner.</p>', $this->stored($id)->get_description());
+    }
+
+    /** Review fix: flagged numbers are matched on raw text, never inside an entity. */
+    public function testHighlightNeverBreaksAnEntity(): void
+    {
+        $html = MetaBox::highlight("<p>It's 3 times <b>stronger</b> & 039 lighter</p>", [
+            ['code' => 'unverified_number', 'field' => 'description', 'detail' => ['3', '039']],
+        ]);
+        $this->assertSame('It&#039;s <mark class="product-copy-highlight">3</mark> times stronger &amp; <mark class="product-copy-highlight">039</mark> lighter', $html);
+    }
 }

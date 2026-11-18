@@ -64,14 +64,17 @@ final class Acceptor
         if ($draft === null || $draft->state !== Draft::PENDING || !$product instanceof \WC_Product) {
             return AcceptResult::refused(AcceptResult::NO_DRAFT);
         }
-        $fields = array_values(array_intersect(Fields::expand($which), array_keys($draft->fields)));
+        // A field accepted earlier is never written again from the same
+        // draft: that would also overwrite its undo value.
+        $fields = array_values(array_intersect(Fields::expand($which), $draft->openFields()));
         if ($fields === []) {
             return AcceptResult::refused(AcceptResult::NO_DRAFT);
         }
         if ($draft->isStale() && empty($args['accept_stale'])) {
             return AcceptResult::refused(AcceptResult::STALE);
         }
-        $replace = !empty($args['replace']);
+        // Ruling on Q4: replacing a manual field needs an explicit boolean true.
+        $replace = ($args['replace'] ?? false) === true;
 
         // Case 51: re-read the target field at accept time.
         $previous = [];
@@ -120,7 +123,7 @@ final class Acceptor
         update_post_meta($productId, Meta::OWNED, $owned);
         update_post_meta($productId, Meta::UNDO, wp_slash($undo));
 
-        $remaining = array_diff(array_keys($draft->fields), $fields);
+        $remaining = array_diff($draft->openFields(), $fields);
         $extra = ['accepted_fields' => array_values(array_unique(array_merge((array) ($draft->extra['accepted_fields'] ?? []), $fields)))];
         if ($replace) {
             $replaced = is_array($draft->extra['replaced'] ?? null) ? $draft->extra['replaced'] : [];

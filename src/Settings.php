@@ -274,8 +274,19 @@ final class Settings
     public function language(): string
     {
         $language = (string) $this->values['language'];
+        if ($language !== '') {
+            return $language;
+        }
+        // A language name reads better in a prompt than a locale code.
+        $locale = self::siteLocale();
+        if (class_exists(\Locale::class)) {
+            $name = \Locale::getDisplayName($locale, 'en');
+            if (is_string($name) && $name !== '' && $name !== $locale) {
+                return $name;
+            }
+        }
 
-        return $language !== '' ? $language : self::siteLocale();
+        return $locale;
     }
 
     public function locale(): string

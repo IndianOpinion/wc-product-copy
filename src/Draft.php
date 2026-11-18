@@ -72,6 +72,19 @@ final class Draft
         return $this->state === self::PENDING && $this->currentHash !== null && $this->currentHash !== $this->inputHash;
     }
 
+    /**
+     * Drafted fields not yet accepted. After a partial accept the draft
+     * stays pending for the others only.
+     *
+     * @return list<string>
+     */
+    public function openFields(): array
+    {
+        $done = is_array($this->extra['accepted_fields'] ?? null) ? $this->extra['accepted_fields'] : [];
+
+        return array_values(array_diff(array_keys($this->fields), $done));
+    }
+
     public function isFlagged(): bool
     {
         return $this->flags !== [];

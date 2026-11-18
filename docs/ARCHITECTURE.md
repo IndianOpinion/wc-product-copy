@@ -136,39 +136,60 @@ setting or the site locale.
    text and reported as `contact_removed`. The `product_copy_allowed_html`
    filter can add tags but never `a`, never a dropped element, and never
    attributes.
-9. **Locks.** Transient `product_copy_lock_<id>` with a random token read
-   back after writing; with a persistent object cache, `wp_cache_add()` is
-   used, which is atomic. The Action Scheduler runner also takes
-   `product_copy_lock_runner` so at most one job runs at a time; a second one
-   is moved 60 seconds later.
+9. **Locks.** Transient `product_copy_lock_<id>`. Without a persistent
+   object cache the transient's option row is taken with one
+   `INSERT IGNORE`, so of two racing workers exactly one wins; an expired
+   lock is cleared by `get_transient()` first. With a persistent object
+   cache, `wp_cache_add()` is used, which is atomic. The Action Scheduler
+   runner also takes `product_copy_lock_runner` so at most one job runs at a
+   time; a second one is moved 60 seconds later. The daily usage option is
+   changed under a short lock (`product_copy_lock_usage`, 30 seconds), and
+   the call cap and cost cap are checked and the attempt counted in that
+   same locked step, so two workers cannot both take the last call.
 10. **Action Scheduler retries.** Three attempts per job, backoff 5 then 10
     minutes. Cap and meter waits go to the start of the next site day; switch
     and pause waits are checked again hourly. A failed draft record is written
     only on the last attempt.
-11. **gen-queue.** Integration uses only the public names the PRD and the
-    gen-queue README give: `gen_queue_register_types`,
-    `gen_queue_register_type()`, `gen_queue_enqueue()` with
-    `idempotency_key`, the `gen_queue_can_run` filter (assumed signature
-    `(bool $allowed, $job)`), `gen_queue_cancel_where()`, and the
-    `JobResult`, `RetryableException`, `PermanentException` and
-    `AccountException` classes, all looked up by name and never required. A
-    job counts as newly queued when `gen_queue_enqueued` fired during the
-    enqueue call. Costs go to the job context's `addCost()` with
-    `metered: true` when spend-meter already recorded them. The job's attempt
-    fields are read when present; when absent, every failure is treated as
-    the last attempt.
-12. **prompt-library.** Rendering calls `prompt_library_render('product-copy-generate',
-    $variables, ['consumer' => 'wc-product-copy'])` and accepts an array with
-    `system` and `user` (optionally `version` and `hash`) or a string
-    (used as the system text). The default is offered through
-    `prompt_library_register_default()` on `init`. Both are guarded by
-    `function_exists()`; any error falls back to the built-in prompt and is
-    logged as `prompt_fallback`.
-13. **spend-meter.** The pre-spend intent is an array with `purpose`,
-    `caller`, `provider`, `model`, `estimated_input_tokens` and
-    `max_output_tokens`; the answer is read for `allowed`, `reason` and
-    `reservation_id`. Only `allowed === true` lets a call through. A denial
-    with a reservation id also fires `spend_meter_release`.
+11. **gen-queue.** Checked against gen-queue 0.1.0's PRD and README:
+    `gen_queue_register_types`, `gen_queue_register_type()` (args
+    `resource_key`, `group`, `cost_estimate`, `timeout`, `max_attempts`),
+    `gen_queue_enqueue()` with `idempotency_key`, the `gen_queue_can_run`
+    filter `(bool $allowed, Job $job)`, `gen_queue_cancel_where(['type' =>
+    ...])`, and the `JobResult`, `RetryableException`, `PermanentException`
+    and `AccountException` classes, all looked up by name and never
+    required. Group and resource key are cut to gen-queue's label rules
+    (64 and 128 bytes); a registration error is caught and logged so it
+    can never break `init`. A job counts as newly queued when
+    `gen_queue_enqueued` fired during the enqueue call. Cap waits throw
+    `RetryableException` with `retryAfter` set to the start of the next
+    site day, switch waits with one hour; the `gen_queue_can_run` veto
+    normally stops them before an attempt is used. Credit and meter
+    kill-switch problems throw `AccountException`, which requeues without
+    using an attempt and holds the group. Costs go to `JobContext::addCost()`
+    with integer `input_units` and `output_units` only when known, and
+    `metered: true` when spend-meter already recorded them. The job's
+    `attempts` and `maxAttempts` decide the final attempt.
+12. **prompt-library.** Checked against prompt-library 0.1.0 (contract
+    1.0), whose public names use the prefix `promptlib_`. Rendering applies
+    the soft filter `promptlib_render` with `(null, 'product-copy-generate',
+    $values, 'live', ['consumer' => 'wc-product-copy'])`; it returns `null`
+    when the library is inactive, an array with `system`, `user`,
+    `version` and `content_hash`, or a `WP_Error`, which falls back to the
+    built-in prompt and is logged as `prompt_fallback`. On `init` the plugin
+    calls `promptlib_register_default('wc-product-copy', $definition)` with
+    a `prompt-library/1` definition of the built-in prompt (its templates
+    use the library's `{{ name }}` syntax) and
+    `promptlib_register_consumer()` with the variable names. The library
+    fences `title` and `facts` with its `fenced` escape; the built-in
+    renderer fences them the same way.
+13. **spend-meter.** Checked against spend-meter 0.1.0 (contract 1). The
+    pre-spend intent holds `purpose`, `caller`, `provider`, `model`,
+    `est_input_tokens` and `max_output_tokens`; the answer is read for
+    `allowed`, `reason` and `reservation_id`. Only `allowed === true` lets a
+    call through. Any reason starting `kill_switch` pauses the plugin. A
+    denial with a reservation id, or a cap reached after an allow, fires
+    `spend_meter_release`. The record carries integer token counts and,
+    only when the provider reported it, `provider_cost` in nanos.
 14. **Failures never overwrite a pending draft.** If a refresh run fails, the
     editor's pending draft stays and only the log records the failure.
 15. **The dry run writes nothing at all.** The event log is muted while a
@@ -210,6 +231,17 @@ setting or the site locale.
     `MockTransport` and a fake caller stand in for the model; a stub
     `wp_remote_post()` throws, so a test cannot reach the network. Tests that
     need a constant or a companion plugin run in a separate process.
+28. **Store data in the prompt.** The title and the facts come from
+    data anyone who can edit a product controls (attributes, tags, writer
+    notes). Both are fenced in `<title>` and `<facts>` blocks, a closing tag
+    inside a value becomes `[/title]` or `[/facts]`, and the system text says
+    that fenced text is data, never instructions. Fencing lowers the risk of
+    prompt injection; it does not remove it, which is why every draft is
+    cleaned, fact-checked and accepted by a person.
+29. **Partial accept is final per field.** A field accepted from a draft
+    is never written again from that draft, so its undo value is the text
+    from before the first accept. Replacing a manual field needs
+    `replace` to be exactly `true`.
 
 ## Performance
 

@@ -249,4 +249,30 @@ final class EnvironmentTest extends TestCase
         $this->assertFalse(product_copy_is_enabled());
         $this->assertSame('switched_off', (new KillSwitch())->blockedReason());
     }
+
+    /** Review fix: the lock row is taken with one atomic insert; a second taker loses until release or expiry. */
+    public function testLockIsTakenOnceAndExpires(): void
+    {
+        $a = new \IndianOpinion\WcProductCopy\Lock();
+        $b = new \IndianOpinion\WcProductCopy\Lock();
+        $this->assertTrue($a->acquire('7'));
+        $this->assertFalse($b->acquire('7'));
+        $a->release('7');
+        $this->assertTrue($b->acquire('7', 5));
+        \IndianOpinion\WcProductCopy\Clock::freeze(\IndianOpinion\WcProductCopy\Clock::now() + 10);
+        $this->assertTrue($a->acquire('7'), 'An expired lock is taken over.');
+    }
+
+    /** Review fix: the call cap is checked and counted in one locked step. */
+    public function testReserveCallStopsAtTheCapAndTheCostCap(): void
+    {
+        $usage = new Usage();
+        $this->assertNull($usage->reserveCall(2, null, 0.0));
+        $this->assertNull($usage->reserveCall(2, null, 0.0));
+        $this->assertSame('calls', $usage->reserveCall(2, null, 0.0));
+        $this->assertSame(2, $usage->today()['calls']);
+        $usage->addCost(0.9, false);
+        $this->assertSame('cost', $usage->reserveCall(10, 1.0, 0.2));
+        $this->assertNull($usage->reserveCall(10, 1.0, 0.1));
+    }
 }

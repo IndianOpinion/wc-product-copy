@@ -161,6 +161,27 @@ final class WpdbStub
     }
 
     /**
+     * Only the lock's `INSERT IGNORE` into the options table is modelled.
+     *
+     * @return int|false
+     */
+    public function query(string $query)
+    {
+        if (str_starts_with($query, 'INSERT IGNORE INTO') && count($this->lastArgs) === 2) {
+            $site = &WpState::site();
+            $name = (string) $this->lastArgs[0];
+            if (array_key_exists($name, $site['options'])) {
+                return 0;
+            }
+            $site['options'][$name] = (string) $this->lastArgs[1];
+
+            return 1;
+        }
+
+        return false;
+    }
+
+    /**
      * @return list<string>
      */
     public function get_col(string $query): array
