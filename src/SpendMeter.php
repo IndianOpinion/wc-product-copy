@@ -6,7 +6,10 @@ namespace IndianOpinion\WcProductCopy;
 
 /**
  * Case 33: soft integration with spend-meter, active only when
- * `SPEND_METER_API` is defined and equal to 1.
+ * `SPEND_METER_API` is defined and equal to 1. Only its contract-1 hooks
+ * are used: the filter `spend_meter_pre_spend` and the actions
+ * `spend_meter_record` and `spend_meter_release`. Money crosses the
+ * boundary as integer nanos.
  */
 final class SpendMeter
 {
@@ -34,8 +37,8 @@ final class SpendMeter
             'caller' => self::CALLER,
             'provider' => $provider,
             'model' => $model,
-            'estimated_input_tokens' => $estimatedInput,
-            'max_output_tokens' => $outputCap,
+            'est_input_tokens' => max(0, $estimatedInput),
+            'max_output_tokens' => max(0, $outputCap),
         ]);
         $answer = is_array($answer) ? $answer : [];
         $reservation = $answer['reservation_id'] ?? null;
@@ -55,17 +58,29 @@ final class SpendMeter
         if (!self::present()) {
             return;
         }
-        do_action('spend_meter_record', [
-            'reservation_id' => $reservation,
+        $call = [
             'purpose' => self::PURPOSE,
             'caller' => self::CALLER,
             'provider' => $provider,
             'model' => $model,
-            'input_tokens' => $tokensIn,
-            'output_tokens' => $tokensOut,
-            'cost' => $cost,
+            'input_tokens' => max(0, (int) $tokensIn),
+            'output_tokens' => max(0, (int) $tokensOut),
             'status' => $status,
-        ]);
+        ];
+        if ($reservation !== null) {
+            $call['reservation_id'] = $reservation;
+        }
+        if ($cost !== null && $cost >= 0.0) {
+            // Provider-reported cost, in nanos as the contract requires.
+            $call['provider_cost'] = self::nanos($cost);
+        }
+        do_action('spend_meter_record', $call);
+    }
+
+    /** Decimal currency units to integer nanos, rounded half up. */
+    public static function nanos(float $amount): int
+    {
+        return (int) round($amount * 1000000000, 0, PHP_ROUND_HALF_UP);
     }
 
     public function release(?string $reservation): void

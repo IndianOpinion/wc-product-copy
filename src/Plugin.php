@@ -169,12 +169,19 @@ final class Plugin
      */
     public static function registerPromptDefault(): void
     {
-        if (function_exists('prompt_library_register_default')) {
-            prompt_library_register_default(PromptBuilder::TEMPLATE_SLUG, [
-                'consumer' => PromptBuilder::CONSUMER,
-                'system' => PromptBuilder::builtinSystem(),
-                'variables' => ['language', 'field_rules', 'fields', 'tone', 'tone_rule', 'title', 'facts', 'image_line'],
-            ]);
+        if (function_exists('promptlib_register_default')) {
+            try {
+                promptlib_register_default(PromptBuilder::CONSUMER, PromptBuilder::definition());
+                if (function_exists('promptlib_register_consumer')) {
+                    $definition = PromptBuilder::definition();
+                    /** @var list<array{name: string}> $variables */
+                    $variables = $definition['variables'];
+                    promptlib_register_consumer(PromptBuilder::TEMPLATE_SLUG, PromptBuilder::CONSUMER, array_column($variables, 'name'));
+                }
+            } catch (\Throwable $e) {
+                // A companion plugin problem must never break this plugin's init.
+                (new Log())->add('prompt_fallback', 0, get_class($e));
+            }
         }
     }
 

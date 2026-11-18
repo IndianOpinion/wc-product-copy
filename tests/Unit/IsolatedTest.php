@@ -76,6 +76,8 @@ final class IsolatedTest extends TestCase
         $this->assertSame('product-copy.generate', $intents[0]['purpose']);
         $this->assertSame('wc-product-copy', $intents[0]['caller']);
         $this->assertSame(1500, $intents[0]['max_output_tokens']);
+        $this->assertIsInt($intents[0]['est_input_tokens']);
+        $this->assertGreaterThan(0, $intents[0]['est_input_tokens']);
         $this->assertSame([['r0']], array_map(static fn ($f) => $f[1], \WpState::fired('spend_meter_release')));
 
         $answers[] = ['allowed' => true, 'reservation_id' => 'r1'];
@@ -87,7 +89,9 @@ final class IsolatedTest extends TestCase
         $this->assertCount(1, $records);
         $this->assertSame('r1', $records[0][1][0]['reservation_id']);
         $this->assertSame('ok', $records[0][1][0]['status']);
-        $this->assertSame(0.002, $records[0][1][0]['cost']);
+        $this->assertSame(2000000, $records[0][1][0]['provider_cost'], 'Provider cost goes to spend-meter in nanos.');
+        $this->assertIsInt($records[0][1][0]['input_tokens']);
+        $this->assertArrayNotHasKey('cost', $records[0][1][0]);
 
         $answers[] = ['allowed' => 'yes'];
         $this->assertSame(JobOutcome::WAIT_DAY, $this->plugin()->generator->run($this->richProduct(), [])->status, 'Only allowed === true lets a call through.');
@@ -109,7 +113,12 @@ final class IsolatedTest extends TestCase
         $id = $this->richProduct();
 
         Plugin::registerPromptDefault();
-        $this->assertSame(PromptBuilder::builtinSystem(), \PromptLibraryStub::$defaults[PromptBuilder::TEMPLATE_SLUG]['system']);
+        $default = \PromptLibraryStub::$defaults[PromptBuilder::CONSUMER];
+        $this->assertSame('prompt-library/1', $default['format']);
+        $this->assertSame(PromptBuilder::TEMPLATE_SLUG, $default['slug']);
+        $this->assertSame(PromptBuilder::builtinSystem(), $default['system']);
+        $this->assertStringContainsString('{{ facts }}', $default['user']);
+        $this->assertContains('facts', \PromptLibraryStub::$consumers[PromptBuilder::TEMPLATE_SLUG . '|' . PromptBuilder::CONSUMER]);
 
         $item = $this->plugin()->planner->evaluate($id, $this->args());
         $this->assertNotNull($item->prompt);
@@ -118,7 +127,15 @@ final class IsolatedTest extends TestCase
         $this->assertSame('prompt-library', $item->prompt->source);
         $call = \PromptLibraryStub::$calls[0];
         $this->assertSame(PromptBuilder::TEMPLATE_SLUG, $call[0]);
-        $this->assertSame(['consumer' => 'wc-product-copy'], $call[2]);
+        $this->assertSame('live', $call[2]);
+        $this->assertSame(['consumer' => 'wc-product-copy'], $call[3]);
+        $this->assertStringNotContainsString('<facts>', $call[1]['facts'], 'The library fences values itself.');
+
+        \PromptLibraryStub::$missing = true;
+        $item = $this->plugin()->planner->evaluate($id, $this->args());
+        $this->assertNotNull($item->prompt);
+        $this->assertSame('builtin', $item->prompt->source);
+        \PromptLibraryStub::$missing = false;
 
         add_filter('product_copy_prompt', static fn (array $p): array => ['system' => 'Filtered', 'user' => $p['user']]);
         $item = $this->plugin()->planner->evaluate($id, $this->args());
@@ -141,6 +158,14 @@ final class IsolatedTest extends TestCase
         do_action('gen_queue_register_types');
         $this->assertArrayHasKey(GenQueueRunner::TYPE, \GenQueueStub::$types);
         $this->assertSame('0.01', \GenQueueStub::$types[GenQueueRunner::TYPE]['options']['cost_estimate']);
+        $this->assertSame('openrouter', \GenQueueStub::$types[GenQueueRunner::TYPE]['options']['group']);
+
+        // gen-queue labels are at most 128 bytes; a long model name must still register.
+        \GenQueueStub::$types = [];
+        $this->settings(['model' => str_repeat('m', 150) . '/x']);
+        do_action('gen_queue_register_types');
+        $this->assertLessThanOrEqual(128, strlen(\GenQueueStub::$types[GenQueueRunner::TYPE]['options']['resource_key']));
+        $this->configure(['call_cap' => 2, 'assumed_cost' => '0.01']);
 
         $id = $this->richProduct();
         $queued = product_copy_queue(product_copy_plan(['ids' => [$id]]));

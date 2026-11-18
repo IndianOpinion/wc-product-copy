@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace IndianOpinion\WcProductCopy\Queue;
 
+use IndianOpinion\WcProductCopy\Clock;
 use IndianOpinion\WcProductCopy\Generator;
 use IndianOpinion\WcProductCopy\JobOutcome;
 use IndianOpinion\WcProductCopy\KillSwitch;
@@ -22,6 +23,7 @@ use IndianOpinion\WcProductCopy\Usage;
 final class GenQueueRunner implements Runner
 {
     public const TYPE = 'product-copy.generate';
+    private const SWITCH_RECHECK = 3600;
 
     public function __construct(
         private readonly Generator $generator,
@@ -50,15 +52,34 @@ final class GenQueueRunner implements Runner
     public function registerType(): void
     {
         $settings = $this->settings->get();
-        $provider = $settings->provider();
-        $model = $settings->model() !== '' ? $settings->model() : 'unset';
-        gen_queue_register_type(self::TYPE, [$this, 'handle'], [
-            'resource_key' => $provider . '/' . $model,
-            'group' => $provider,
-            'cost_estimate' => $settings->assumedCost() !== null ? (string) $settings->assumedCost() : '0',
-            'timeout' => 180,
-            'max_attempts' => 3,
-        ]);
+        $provider = self::label($settings->provider(), 64, 'product-copy');
+        $model = self::label($settings->model(), 63, 'unset');
+        try {
+            gen_queue_register_type(self::TYPE, [$this, 'handle'], [
+                'resource_key' => $provider . '/' . $model,
+                'group' => $provider,
+                'cost_estimate' => $settings->assumedCost() !== null ? (string) $settings->assumedCost() : '0',
+                'timeout' => 180,
+                'max_attempts' => 3,
+            ]);
+        } catch (\Throwable $e) {
+            // gen-queue throws on a bad or duplicate registration. That must
+            // never take the site down on init; the jobs wait as "no handler".
+            if (function_exists('error_log')) {
+                error_log('wc-product-copy: gen-queue registration failed: ' . get_class($e));
+            }
+        }
+    }
+
+    /**
+     * gen-queue labels: 1 to N bytes of letters, digits and . _ - : / @ +,
+     * starting with a letter or digit.
+     */
+    private static function label(string $value, int $max, string $fallback): string
+    {
+        $value = substr((string) preg_replace('#[^A-Za-z0-9_.:/@+-]#', '-', $value), 0, $max);
+
+        return preg_match('#^[A-Za-z0-9]#', $value) === 1 ? $value : $fallback;
     }
 
     /**
@@ -135,10 +156,12 @@ final class GenQueueRunner implements Runner
                 return self::ok(['product_id' => $productId, 'outcome' => $outcome->status, 'reason' => $outcome->reason]);
             case JobOutcome::WAIT_SWITCH:
                 if ($outcome->reason === 'account_error' || $outcome->reason === 'spend_meter_kill_switch') {
+                    // Requeued without using an attempt; the group is held.
                     throw self::exception('AccountException', 'Paused: ' . $outcome->reason);
                 }
-                throw self::exception('RetryableException', 'Waiting: ' . $outcome->reason);
+                throw self::exception('RetryableException', 'Waiting: ' . $outcome->reason, self::SWITCH_RECHECK);
             case JobOutcome::WAIT_DAY:
+                throw self::exception('RetryableException', 'Waiting: ' . $outcome->reason, max(60, Clock::nextDayStart() - Clock::now()));
             case JobOutcome::RETRY:
                 throw self::exception('RetryableException', 'Waiting: ' . $outcome->reason);
             default:
@@ -166,11 +189,19 @@ final class GenQueueRunner implements Runner
         if ($outcome->cost === null || !is_object($ctx) || !method_exists($ctx, 'addCost')) {
             return;
         }
-        $ctx->addCost($outcome->cost, [
-            'input_units' => $outcome->tokensIn,
-            'output_units' => $outcome->tokensOut,
-            'metered' => $outcome->metered,
-        ]);
+        // gen-queue's addCost() accepts only these keys, with integer units.
+        $usage = ['metered' => $outcome->metered];
+        if ($outcome->tokensIn !== null && $outcome->tokensIn >= 0) {
+            $usage['input_units'] = $outcome->tokensIn;
+        }
+        if ($outcome->tokensOut !== null && $outcome->tokensOut >= 0) {
+            $usage['output_units'] = $outcome->tokensOut;
+        }
+        try {
+            $ctx->addCost(max(0.0, $outcome->cost), $usage);
+        } catch (\InvalidArgumentException $e) {
+            // Cost reporting must not turn a saved draft into a failed job.
+        }
     }
 
     private static function jobType(mixed $job): ?string
@@ -216,12 +247,12 @@ final class GenQueueRunner implements Runner
         return $data;
     }
 
-    private static function exception(string $short, string $message): \Throwable
+    private static function exception(string $short, string $message, ?int $retryAfter = null): \Throwable
     {
         $class = 'IndianOpinion\\GenQueue\\' . $short;
         if (class_exists($class) && is_subclass_of($class, \Throwable::class)) {
             /** @var \Throwable */
-            return new $class($message);
+            return $short === 'RetryableException' ? new $class($message, $retryAfter) : new $class($message);
         }
 
         return new \RuntimeException($message);

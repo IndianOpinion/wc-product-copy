@@ -153,7 +153,7 @@ final class PlanTest extends TestCase
         $out = implode("\n", \WP_CLI::$out);
 
         $this->assertSame(0, $code);
-        $this->assertStringContainsString('Product title: Oak chopping board', $out);
+        $this->assertStringContainsString("<title>\nOak chopping board\n</title>", $out);
         $this->assertStringContainsString('Material: Oak', $out);
         $this->assertStringContainsString(Prompt::IMAGE_PLACEHOLDER, $out);
         $this->assertStringNotContainsString('base64', $out);

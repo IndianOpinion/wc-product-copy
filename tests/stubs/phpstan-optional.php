@@ -6,20 +6,16 @@
  */
 
 /**
- * @param array<string, mixed> $vars
- * @param array<string, mixed> $context
- *
- * @return mixed
+ * @param array<string, mixed> $definition
  */
-function prompt_library_render(string $slug, array $vars, array $context = [])
+function promptlib_register_default(string $consumer_id, array $definition): void
 {
-    return null;
 }
 
 /**
- * @param array<string, mixed> $definition
+ * @param list<string> $supplied_names
  */
-function prompt_library_register_default(string $slug, array $definition): void
+function promptlib_register_consumer(string $slug, string $consumer_id, array $supplied_names): void
 {
 }
 
